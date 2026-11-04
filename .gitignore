@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.Xil/
+.vscode/
+.idea/
+*~
+*.tmp
+serial.log

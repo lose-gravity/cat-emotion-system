@@ -1,0 +1,52 @@
+纯C参考实现 使用说明
+======================
+(给只会C语言的HLS队友)
+
+一、这是什么
+cat_feat.c  + cat_mlp.c  + main.c = 完整猫叫情绪识别链路的纯C99参考实现。
+算法与 Python 版(features_numpy.py + 集成模型)完全一致, 已对拍验证:
+  40段金标准全部通过, 各阶段误差1e-7量级(容差1e-3的万分之一)。
+它有两个用途:
+  1. PC上跑通, 理解算法每一步(每个中间量都能和参考值对比)
+  2. 作为 Vitis HLS 设计源码的初稿: 把这段C拷进HLS工程, 加pragma逐步优化
+
+二、文件
+  cat_feat.h/.c   特征提取: PCM(24000点int16) -> 295维(或885维分段)
+  cat_mlp.h/.c    两个MLP推理 + 集成(权重从CSV运行时读)
+  main.c          对拍测试: 自动对比golden参考值并报告每阶段最大误差
+  tables.h        固定矩阵(mel稀疏/DCT/Hann/savgol), 由00_gen_tables.py生成
+  cat_test.exe    编译好的测试程序(静态编译, 可直接运行)
+
+三、PC上怎么跑(Dev-C++)
+  1. 新建"控制台应用程序"项目, 添加 main.c / cat_feat.c / cat_mlp.c 三个源文件
+     (tables.h 会自动被包含, 不用手动添加; 但tables.h要在项目目录里)
+  2. 项目->选项->编译器: 加编译参数 -std=c99 -O2, 链接参数 -lm
+  3. 工作目录设为 c_ref 本目录(重要! 程序用相对路径 ../golden 找数据)
+  4. 运行参数填文件名前缀, 例如: F_MAG01_EU_FN_FED01_104
+     (文件名列表见 ../golden/manifest.csv 第一列, 去掉.wav)
+  5. 命令行编译也可以:
+     gcc -std=c99 -O2 -o cat_test.exe main.c cat_feat.c cat_mlp.c -lm
+
+四、看懂算法: 按 main.c 的对拍顺序读
+  PCM -> (1)补零分帧加窗 -> (2)FFT -> (3)mel稀疏滤波 -> (4)log+截断
+      -> (5)DCT -> (6)savgol delta -> 同时算(7)质心/(8)RMS/(9)过零率
+      -> (10)百分位统计组装295维 -> (11)标准化 -> (12)两个MLP -> (13)概率平均
+每个中间量的参考值在 ../golden/interm/<文件名>/ 下, 与C代码一一对应。
+具体参数含义见 ../特征规格.md。
+
+五、移植到 Vitis HLS 时要改什么(按顺序)
+  1. main.c 不要搬(它只负责读CSV对拍), HLS里写自己的testbench,
+     调用 cat_feat.c 的函数即可
+  2. double -> 先用float直接跑(可以), 之后想定点再换
+  3. fft_radix2 可以直接搬进HLS; 想更快可换Xilinx FFT IP(要学hls::fft)
+  4. log10 在HLS里很贵: 换成查表+插值(表可以我从Python导出)
+  5. qsort(百分位数)在HLS里不能动态: 帧数固定151/47, 换成固定排序网络
+  6. 全局/static数组自动映射成BRAM; mel_col/mel_val已经稀疏化, 直接综合
+  7. 权重CSV读取(fopen)只用于PC验证; HLS里我另出weights头文件
+  8. 资源参考: 151帧2048点FFT占大头, 用一个FFT单元串行复用完全来得及
+     (预算: 1.5s内算完即可, 100MHz下实际<80ms)
+
+六、遇到对不上的时候
+  从上往下查: mel_db对不上->查FFT/窗; mfcc对不上->查DCT/log;
+  d1/d2对不上->查savgol矩阵乘法; 质心/rms/zcr对不上->查各自的帧移512。
+  每层的参考值都在golden/interm里, 错在哪层一目了然。
